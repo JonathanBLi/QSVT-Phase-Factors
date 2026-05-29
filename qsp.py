@@ -134,7 +134,7 @@ def test_ell_1(key, d_tilde, sigma=0.1, T=20, parity=1, dtype=jnp.float64):
 
     Phi_star = jax.random.uniform(k1, (d_tilde,), minval=-jnp.pi, maxval=jnp.pi, dtype=dtype)
     # guaranteed contraction by Lemma 26 in https://arxiv.org/pdf/2209.10162
-    # Phi_star = 0.544 * Phi_star / jnp.linalg.norm(Phi_star, ord=1) 
+    Phi_star = 0.544 * Phi_star / jnp.linalg.norm(Phi_star, ord=1)
     c = F(Phi_star, parity)
     
     Phi_0 = Phi_star + (sigma / d_tilde) * jax.random.normal(k2, (d_tilde,), dtype=dtype)
@@ -167,123 +167,9 @@ def test_ell_2(key, d_tilde, r=1.0, sigma=0.1, T=20, parity=1, dtype=jnp.float64
     ok = norm <= 1.0
     return ok, norm, Phi_0, Phi_T, Phi_star, c
 
-def _shift_no_wrap(x, shift):
-    n = x.shape[0]
-    idx = jnp.arange(n, dtype=jnp.int32)
-    src = idx - shift.astype(jnp.int32)
-    valid = (src >= 0) & (src < n)
-    src_clipped = jnp.clip(src, 0, n - 1)
-    gathered = x[src_clipped]
-    return jnp.where(valid, gathered, jnp.zeros((), dtype=x.dtype))
-
-# ---------------------------------------
-# Computes the contribution of F_ell to the kth Chebyshev coefficient,
-# i.e. the sum of the degree ell terms satisfying k = |d - 2(j_1 - j_2 + ... + j_ell)|
-#  - Phi: reduced phase factors of dimension d + 1
-#  - ell: odd integer between 1 and d + 1, inclusive
-#  - k: even integer between 0 and d, inclusive
-# ---------------------------------------
-@partial(jax.jit, static_argnames=("ell",))
-def F_ell_k(Phi, ell, k):
-    d = Phi.shape[0] - 1
-    c = jnp.cos(Phi)
-    t = jnp.tan(Phi)
-
-    p = jnp.prod(c).astype(jnp.result_type(Phi, jnp.float32))
-    p *= jnp.where((((ell - 1) // 2) % 2) == 1, -1.0, 1.0).astype(p.dtype)
-
-    R = (d * (d + 1)) // 2
-    W = 2 * R + 1
-    off = R
-
-    dp = jnp.zeros((ell + 1, W), dtype=p.dtype)
-    dp = dp.at[0, off].set(1.0)
-
-    def body_j(j, dp):
-        tj = t[j].astype(dp.dtype)
-        mmax = jnp.minimum(ell - 1, j)
-
-        def body_m(m_rev, dp):
-            m = mmax - m_rev
-            sgn = jnp.where((m % 2) == 0, 1, -1).astype(jnp.int32)
-            sh = (sgn * j).astype(jnp.int32)
-
-            add = _shift_no_wrap(dp[m], sh) * tj
-            dp = dp.at[m + 1].add(add)
-            return dp
-
-        dp = jax.lax.fori_loop(0, mmax + 1, body_m, dp)
-        return dp
-
-    dp = jax.lax.fori_loop(0, d + 1, body_j, dp)
-
-    a1 = (d - k) // 2
-    a2 = (d + k) // 2
-
-    i1 = off + a1
-    i2 = off + a2
-    val1 = jnp.where((0 <= i1) & (i1 < W), dp[ell, i1], 0.0)
-    val2 = jnp.where((0 <= i2) & (i2 < W), dp[ell, i2], 0.0)
-
-    return p * (val1 + jnp.where(a2 == a1, 0.0, val2))
-
-# ---------------------------------------
-# Computes the sum of F_ell_k across k
-#  - Phi: reduced phase factors of dimension d + 1
-#  - ell: odd integer between 1 and d + 1, inclusive
-# ---------------------------------------
-@partial(jax.jit, static_argnames=("ell",))
-def F_ell(Phi, ell):
-    d = Phi.shape[0] - 1
-    i = jnp.arange(0, d + 1, 2, dtype=jnp.int32)
-    return jax.vmap(lambda k: F_ell_k(Phi, ell, k))(i)
-
-# ---------------------------------------
-# Tests if ||F_ell(Phi)|| <= (2 * ||Phi||)^ell / ell!
-#  - dtype: jnp.float32 or jnp.float64 (default jnp.float64)
-# ---------------------------------------
-def test_F_ell_norm(key, d_tilde, dtype=jnp.float64):
-    Phi = jax.random.uniform(key, shape=(d_tilde + 1,), minval=-jnp.pi, maxval=jnp.pi, dtype=dtype)
-    for ell in range(1, d_tilde + 2, 2):
-        f_ell = F_ell(Phi, ell)
-        log_norm = jnp.log(jnp.linalg.norm(f_ell))
-        log_rhs = ell * jnp.log(2.0 * jnp.linalg.norm(Phi)) - gammaln(ell + 1.0)
-        if bool(log_norm > log_rhs):
-            sys.exit(f"F^(ell) norm for ell={ell} exceeds RHS: {log_norm} > {log_rhs}")
-
-# ---------------------------------------
-# Sanity check for d_tilde=4 case
-# ---------------------------------------
-def test_4d(key):
-    Psi = jax.random.uniform(key, shape=(5,), minval=-jnp.pi, maxval=jnp.pi, dtype=jnp.float64)
-
-    c = jnp.cos(Psi)
-    t = jnp.tan(Psi)
-    p = jnp.prod(c)
-
-    a_0 = p * (t[2] - t[0] * t[1] * t[3] - t[0] * t[2] * t[4] - t[1] * t[2] * t[3] - t[1] * t[3] * t[4] + t[0] * t[1] * t[2] * t[3] * t[4])
-    a_2 = p * (t[1] + t[3] - t[0] * t[1] * t[2] - t[0] * t[2] * t[3] - t[0] * t[3] * t[4] - t[0] * t[1] * t[4] - t[1] * t[2] * t[4] - t[2] * t[3] * t[4])
-    a_4 = p * (t[0] + t[4])
-
-    # equivalent form
-    # a_0 = jnp.sin(Psi[2]) * c[1] * c[3] * jnp.cos(Psi[0] + Psi[4]) - jnp.sin(Psi[1]) * jnp.sin(Psi[3]) * jnp.sin(Psi[0] + Psi[2] + Psi[4])
-    # a_2 = jnp.sin(Psi[1] + Psi[3]) * jnp.cos(Psi[0] + Psi[2] + Psi[4])
-    # a_4 = c[1] * c[2] * c[3] * jnp.sin(Psi[0] + Psi[4])
-    # return jnp.array([a_0, a_2, a_4], dtype=Psi.dtype)
-
-    # expected coefficients
-    # return F(Psi, full=True, parity=0)
-
-    # check against F_ell_k
-    # for ell in range(1, 6, 2):
-    #     print(jnp.array([F_ell_k(Psi, ell, k) for k in range(0, 5, 2)]))
-
-    return jnp.array([a_0, a_2, a_4], dtype=Psi.dtype)
-
 if __name__ == "__main__":
-    d_tilde = 50
-    trials = 10_000
-    key = jax.random.PRNGKey(0)
+    d_tilde = 100
+    trials = 100_000
 
     # print passed every p trials
     p = 100
@@ -292,23 +178,20 @@ if __name__ == "__main__":
     sigma = 0.1
 
     # ball radius
-    r = 1.0
+    r = 0.1
 
     # number of Newton iterations
     T = 20
     
-    for t in range(trials):
-        key, kt = jax.random.split(key)
+    d_tildes = [4, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    for d in d_tildes:
+        m = 0
+        for t in range(trials):
+            # samples Phi uniformly from B(r)
+            key = jax.random.PRNGKey(t)
+            k1, k2 = jax.random.split(key, 2)
+            u = jax.random.normal(k1, (d + 2,))
+            Phi = r * (u[:d] / jnp.linalg.norm(u))
 
-        # ok, norm, Phi_0, Phi_T, Phi_star, c = test_ell_1(kt, d_tilde, sigma, T)
-        ok, norm, Phi_0, Phi_T, Phi_star, c = test_ell_2(kt, d_tilde, sigma, r, T)
-        
-        if not bool(ok):
-            print("Failed trial", t, "\n||Phi_T|| =", norm, "\nPhi_0 =", Phi_0, "\nPhi_T =", Phi_T, "\nPhi_star =", Phi_star, "\nc =", c)
-            break
-
-        # test_F_ell_norm(kt, d_tilde)
-        # print(test_4d(kt))
-
-        if p and (t + 1) % p == 0:
-            print("Passed", t + 1, "trials")
+            m = max(m, jnp.linalg.norm(F(Phi, 0) - 2 * Phi))
+        print(d, m)
