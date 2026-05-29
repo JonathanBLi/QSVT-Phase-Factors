@@ -1,6 +1,6 @@
 # QSVT Algorithms and Experiments
 
-This repository contains JAX implementations of Algorithms 3.1, 3.2, and 3.3 from [abs/2307.12468](https://arxiv.org/pdf/2307.12468), with additional randomized numerical experiments.
+This repository contains JAX implementations of Algorithms 3.1, 3.2, and 3.3 from [abs/2307.12468](https://arxiv.org/abs/2307.12468), with additional randomized numerical experiments.
 
 ## Features
 
@@ -141,7 +141,7 @@ The test:
 Running the file directly executes a scaling experiment over several reduced dimensions.
 
 ```bash
-python qsp_newton.py
+python qsp.py
 ```
 
 The default experiment uses
